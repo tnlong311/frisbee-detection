@@ -1,8 +1,8 @@
-# Frisbee Detection Box MVP
+# Frisbee Detection Transform MVP
 
-Minimal Python 3.11 project for drawing a thin red box around a frisbee disc from an existing detection JSON result.
+Minimal Python 3.11 project for transforming an image around a frisbee disc from an existing detection JSON result.
 
-This project does not run object detection itself. It takes a source image and a detection JSON object, then draws the box using the JSON values exactly.
+This project does not run object detection itself. It takes a source image and a detection JSON object, then creates a normalized `1125x2000` output image centered on the selected frisbee box. By default, it draws the transformed box on the output image.
 
 ## Input
 
@@ -46,9 +46,41 @@ right = x + width / 2
 bottom = y + height / 2
 ```
 
+When multiple frisbee predictions exist, the highest-confidence prediction controls the image transform. Missing confidence is treated as `0`.
+
+## Transform
+
+The output image is generated with these fixed constants:
+
+```text
+target box diagonal = 350px
+output width = 1125px
+output height = 2000px
+output aspect ratio = 9:16
+```
+
+For the selected rectangle:
+
+```text
+A = top-left
+B = top-right
+C = bottom-right
+D = bottom-left
+```
+
+The image is scaled so the selected box diagonal length becomes `350px`. It is rotated counterclockwise by:
+
+```text
+angle = atan(height / width)
+```
+
+This aligns diagonal `BD` with the horizontal line. The intersection of the box diagonals is placed at the exact center of the output image.
+
+If the required transformed crop exceeds the source image bounds, the script returns an error instead of padding the output.
+
 ## Output
 
-Annotated images are saved to:
+Transformed images are saved to:
 
 ```bash
 data/output/
@@ -95,6 +127,12 @@ Run with an explicit output path:
 python3.11 draw_frisbee_box.py data/image-1.jpg data/input-1.json --output data/output/image-1-boxed.jpg
 ```
 
+Run without drawing the final transformed box:
+
+```bash
+python3.11 draw_frisbee_box.py data/image-1.jpg data/input-1.json --has-box false
+```
+
 The older named JSON argument also works:
 
 ```bash
@@ -110,6 +148,6 @@ python3.11 draw_frisbee_box.py data/image-1.jpg --json '[{"predictions":{"predic
 ## Notes
 
 - The script draws a thin red outline only. It does not fill the box.
-- The script draws every prediction with `"class": "frisbee"`.
-- If a prediction has no `class` field, it is drawn when it includes `x`, `y`, `width`, and `height`.
-- The script does not infer, detect, resize, or adjust the box from image content.
+- The script transforms around the highest-confidence prediction with `"class": "frisbee"`.
+- If a prediction has no `class` field, it is usable when it includes `x`, `y`, `width`, and `height`.
+- The script does not infer or detect the box from image content.
