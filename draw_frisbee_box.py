@@ -13,10 +13,10 @@ from constants import (
     BD_OUTPUT_SUFFIX,
     BOX_OUTLINE_COLOR,
     BOX_OUTLINE_WIDTH,
-    CROP_HEIGHT_PX,
-    CROP_WIDTH_PX,
+    CROP_ASPECT_HEIGHT,
+    CROP_ASPECT_WIDTH,
+    CROP_WIDTH_TO_TARGET_BOX_DIAGONAL,
     DEFAULT_HAS_BOX,
-    TARGET_BOX_DIAGONAL_PX,
 )
 
 ROBOFLOW_API_URL = "https://serverless.roboflow.com"
@@ -46,6 +46,7 @@ class TransformGeometry:
     angle: float
     scale: float
     center: Point
+    crop_size: tuple[int, int]
     affine: tuple[float, float, float, float, float, float]
 
 
@@ -252,7 +253,7 @@ def _transform_image(
     resample = resampling_enum.BICUBIC if resampling_enum else Image.BICUBIC
 
     transformed = image.transform(
-        (CROP_WIDTH_PX, CROP_HEIGHT_PX),
+        geometry.crop_size,
         affine_method,
         geometry.affine,
         resample=resample,
@@ -275,10 +276,14 @@ def _build_transform_geometry(box: DetectionBox, angle: float) -> TransformGeome
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
 
-    diagonal = math.hypot(box.width, box.height)
-    scale = TARGET_BOX_DIAGONAL_PX / diagonal
+    detected_box_diagonal = math.hypot(box.width, box.height)
+    target_box_diagonal = detected_box_diagonal
+    crop_width = round(target_box_diagonal * CROP_WIDTH_TO_TARGET_BOX_DIAGONAL)
+    crop_height = round(crop_width * CROP_ASPECT_HEIGHT / CROP_ASPECT_WIDTH)
+    crop_size = (crop_width, crop_height)
+    scale = target_box_diagonal / detected_box_diagonal
     source_center = (box.x, box.y)
-    output_center = (CROP_WIDTH_PX / 2, CROP_HEIGHT_PX / 2)
+    output_center = (crop_width / 2, crop_height / 2)
     cos_angle = math.cos(angle)
     sin_angle = math.sin(angle)
 
@@ -293,7 +298,7 @@ def _build_transform_geometry(box: DetectionBox, angle: float) -> TransformGeome
         -sin_angle * output_center[0] + cos_angle * output_center[1]
     ) / scale
 
-    return TransformGeometry(angle, scale, source_center, (a, b, c, d, e, f))
+    return TransformGeometry(angle, scale, source_center, crop_size, (a, b, c, d, e, f))
 
 
 def _validate_crop_bounds(
@@ -301,11 +306,12 @@ def _validate_crop_bounds(
     image_size: tuple[int, int],
 ) -> None:
     image_width, image_height = image_size
+    crop_width, crop_height = geometry.crop_size
     output_corners = (
         (0, 0),
-        (CROP_WIDTH_PX, 0),
-        (CROP_WIDTH_PX, CROP_HEIGHT_PX),
-        (0, CROP_HEIGHT_PX),
+        (crop_width, 0),
+        (crop_width, crop_height),
+        (0, crop_height),
     )
 
     for source_x, source_y in (
@@ -341,7 +347,8 @@ def _box_corners(box: DetectionBox) -> Polygon:
 def _transform_polygon(polygon: Polygon, geometry: TransformGeometry) -> Polygon:
     cos_angle = math.cos(geometry.angle)
     sin_angle = math.sin(geometry.angle)
-    output_center = (CROP_WIDTH_PX / 2, CROP_HEIGHT_PX / 2)
+    crop_width, crop_height = geometry.crop_size
+    output_center = (crop_width / 2, crop_height / 2)
 
     transformed_points: list[Point] = []
     for x, y in polygon:

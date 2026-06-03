@@ -1,6 +1,6 @@
 # Frisbee Detection Transform MVP
 
-Minimal Python 3.11 project for detecting a frisbee with a hosted Roboflow workflow, then transforming the image around the detected disc.
+Minimal Python 3.11 project for detecting a frisbee with a hosted Roboflow workflow, transforming the image around the detected disc, and turning image frames into a video.
 
 The script takes a source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized `1125x2000` output images centered on the selected frisbee box. By default, it draws the transformed box on each output image.
 
@@ -27,13 +27,13 @@ When multiple frisbee predictions exist, the highest-confidence prediction contr
 
 ## Transform
 
-The output image is generated with these fixed constants:
+The output image is generated relative to the selected box diagonal:
 
 ```text
-target box diagonal = 350px
-output width = 1125px
-output height = 2000px
 output aspect ratio = 9:16
+target box diagonal = selected box diagonal
+output width = target box diagonal * 3
+output height = output width * 16 / 9
 ```
 
 For the selected rectangle:
@@ -45,7 +45,7 @@ C = bottom-right
 D = bottom-left
 ```
 
-The image is scaled so the selected box diagonal length becomes `350px`. It writes two variants:
+The image is scaled so the selected box diagonal stays at the target disc length. It writes two variants:
 
 ```text
 BD variant: rotate by  atan(height / width)
