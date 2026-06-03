@@ -6,20 +6,22 @@ Minimal Python 3.11 project for detecting a frisbee with a hosted Roboflow workf
 
 ```text
 center_frisbee_image.py  Detect a frisbee, center the source image, and save image variants.
+center_frisbee_images.py Detect frisbees in every image in a folder and save image variants.
 images_to_video.py   Turn images in data/video-input into a 1440x2560 vertical H.264 MP4 video.
 ```
 
-`center_frisbee_image.py` takes a source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. By default, it draws the centered box on each output image.
+`center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write boxed copies to `data/output-with-box`.
 
 ## Input
 
-1. Image path relative to this repo, for example:
+1. Image path or image folder path relative to this repo, for example:
 
    ```bash
    data/image-1.jpg
+   data/images
    ```
 
-2. A local `.env` file with the Roboflow API key and box outline setting.
+2. A local `.env` file with the Roboflow API key and boxed-copy setting.
 
 The script treats `x` and `y` as the center of the box:
 
@@ -71,11 +73,18 @@ Centered images are saved to:
 data/output/
 ```
 
-By default, the output files are:
+By default, the unboxed output files are:
 
 ```bash
 data/output/<image-stem>-boxed-bd.<ext>
 data/output/<image-stem>-boxed-ac.<ext>
+```
+
+When `GEN_BOX=true`, boxed copies are also saved to:
+
+```bash
+data/output-with-box/<image-stem>-boxed-bd.<ext>
+data/output-with-box/<image-stem>-boxed-ac.<ext>
 ```
 
 For example:
@@ -106,10 +115,10 @@ Create a local `.env` file:
 
 ```bash
 ROBOFLOW_API_KEY=your_api_key_here
-HAS_BOX=true
+GEN_BOX=false
 ```
 
-`HAS_BOX` accepts values such as `true`, `false`, `1`, `0`, `yes`, and `no`.
+`GEN_BOX` accepts values such as `true`, `false`, `1`, `0`, `yes`, and `no`.
 
 ## Run Detection Centering
 
@@ -130,6 +139,24 @@ This writes:
 ```bash
 data/output/image-1-boxed-bd.jpg
 data/output/image-1-boxed-ac.jpg
+```
+
+Run against every supported image in a folder:
+
+```bash
+python3.11 center_frisbee_images.py data/images
+```
+
+Folder input also accepts a repo-relative path with a leading slash when the matching absolute path does not exist:
+
+```bash
+python3.11 center_frisbee_images.py /data/images
+```
+
+For folder input, `--output` is treated as an output folder:
+
+```bash
+python3.11 center_frisbee_images.py data/images --output data/output
 ```
 
 ## Run Images To Video

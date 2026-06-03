@@ -16,7 +16,7 @@ from constants import (
     CROP_ASPECT_HEIGHT,
     CROP_ASPECT_WIDTH,
     CROP_WIDTH_TO_TARGET_BOX_DIAGONAL,
-    DEFAULT_HAS_BOX,
+    DEFAULT_GEN_BOX,
 )
 
 ROBOFLOW_API_URL = "https://serverless.roboflow.com"
@@ -25,7 +25,7 @@ ROBOFLOW_WORKFLOW_ID = "detect-frisbees"
 ROBOFLOW_IMAGE_KEY = "image"
 ROBOFLOW_USE_CACHE = True
 ROBOFLOW_API_KEY_ENV = "ROBOFLOW_API_KEY"
-HAS_BOX_ENV = "HAS_BOX"
+GEN_BOX_ENV = "GEN_BOX"
 
 Point = tuple[float, float]
 Polygon = tuple[Point, Point, Point, Point]
@@ -60,7 +60,7 @@ def center_frisbee_image(
     image_path: str,
     detections: dict | list,
     output_path: str | None = None,
-    has_box: bool = DEFAULT_HAS_BOX,
+    gen_box: bool = DEFAULT_GEN_BOX,
 ) -> list[str]:
     image_file = Path(image_path)
     if not image_file.exists():
@@ -75,7 +75,8 @@ def center_frisbee_image(
         Path(output_path) if output_path else _default_centered_output_path(image_file)
     )
     output_files = _variant_output_paths(base_output_file, variants)
-    for output_file in output_files:
+    boxed_output_files = _with_box_output_paths(output_files) if gen_box else ()
+    for output_file in (*output_files, *boxed_output_files):
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
     Image, ImageDraw = _load_pillow()
@@ -92,31 +93,51 @@ def center_frisbee_image(
         ]
 
         for output_file, centered_image, centered_box in render_jobs:
-            if has_box:
-                draw = ImageDraw.Draw(centered_image)
+            centered_image.save(output_file)
+            if gen_box:
+                boxed_image = centered_image.copy()
+                draw = ImageDraw.Draw(boxed_image)
                 draw.line(
                     (*centered_box, centered_box[0]),
                     fill=BOX_OUTLINE_COLOR,
                     width=BOX_OUTLINE_WIDTH,
                 )
-            centered_image.save(output_file)
+                boxed_image.save(_with_box_output_path(output_file))
 
-    return [str(output_file) for output_file in output_files]
+    return [str(output_file) for output_file in (*output_files, *boxed_output_files)]
 
 
 def center_frisbee_image_from_api(
     image_path: str,
     output_path: str | None = None,
 ) -> list[str]:
-    image_file = Path(image_path)
+    image_file = resolve_existing_input_path(image_path)
     if not image_file.exists():
         raise FileNotFoundError(f"Image file does not exist: {image_file}")
+    if not image_file.is_file():
+        raise FileNotFoundError(f"Input path is not an image file: {image_file}")
 
+    api_key, gen_box = load_api_settings()
+    detections = run_detection_workflow(str(image_file), api_key)
+    return center_frisbee_image(str(image_file), detections, output_path, gen_box)
+
+
+def load_api_settings() -> tuple[str, bool]:
     _load_env()
-    api_key = _load_required_env(ROBOFLOW_API_KEY_ENV)
-    has_box = _load_has_box()
-    detections = _run_detection_workflow(image_path, api_key)
-    return center_frisbee_image(image_path, detections, output_path, has_box)
+    return _load_required_env(ROBOFLOW_API_KEY_ENV), _load_gen_box()
+
+
+def resolve_existing_input_path(input_path: str | Path) -> Path:
+    path = Path(input_path)
+    if path.exists():
+        return path
+
+    if path.is_absolute():
+        repo_relative_path = Path.cwd() / str(path).lstrip("/")
+        if repo_relative_path.exists():
+            return repo_relative_path
+
+    return path
 
 
 def _load_env() -> None:
@@ -138,11 +159,11 @@ def _load_required_env(name: str) -> str:
     return value.strip()
 
 
-def _load_has_box() -> bool:
-    return _parse_bool(_load_required_env(HAS_BOX_ENV))
+def _load_gen_box() -> bool:
+    return _parse_bool(_load_required_env(GEN_BOX_ENV))
 
 
-def _run_detection_workflow(image_path: str, api_key: str) -> dict | list:
+def run_detection_workflow(image_path: str, api_key: str) -> dict | list:
     try:
         from inference_sdk import InferenceHTTPClient
     except ImportError as exc:
@@ -376,6 +397,22 @@ def _variant_output_paths(
     )
 
 
+def _with_box_output_paths(output_files: tuple[Path, Path]) -> tuple[Path, Path]:
+    return (
+        _with_box_output_path(output_files[0]),
+        _with_box_output_path(output_files[1]),
+    )
+
+
+def _with_box_output_path(output_file: Path) -> Path:
+    output_dir = output_file.parent
+    if output_dir == Path("."):
+        return Path("output-with-box") / output_file.name
+
+    with_box_dir = output_dir.with_name(f"{output_dir.name}-with-box")
+    return with_box_dir / output_file.name
+
+
 def _add_output_suffix(output_file: Path, suffix: str) -> Path:
     return output_file.with_name(f"{output_file.stem}-{suffix}{output_file.suffix}")
 
@@ -405,8 +442,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Detect a frisbee via Roboflow and center the image around its box."
     )
-    parser.add_argument("image_path", help="Relative or absolute path to the source image.")
-    parser.add_argument("--output", help="Optional output image path.")
+    parser.add_argument(
+        "image_path",
+        help="Relative or absolute path to the source image.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Optional output image path.",
+    )
     return parser
 
 

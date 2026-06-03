@@ -7,24 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from constants import SUPPORTED_IMAGE_SUFFIXES
+
 INPUT_DIR = Path("data/video-input")
 DEFAULT_OUTPUT_PATH = Path("data/output/video.mp4")
 
 TARGET_WIDTH_PX = 1440
 TARGET_HEIGHT_PX = 2560
 TARGET_SIZE = f"{TARGET_WIDTH_PX}x{TARGET_HEIGHT_PX}"
-
-SUPPORTED_IMAGE_SUFFIXES = frozenset(
-    {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".bmp",
-        ".tif",
-        ".tiff",
-    }
-)
 
 FFMPEG_VIDEO_CODEC = "libx264"
 FFMPEG_PRESET = "medium"
