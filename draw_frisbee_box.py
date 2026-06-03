@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from constants import (
+    AC_OUTPUT_SUFFIX,
+    BD_OUTPUT_SUFFIX,
     BOX_OUTLINE_COLOR,
     BOX_OUTLINE_WIDTH,
     CROP_HEIGHT_PX,
@@ -16,6 +18,14 @@ from constants import (
     DEFAULT_HAS_BOX,
     TARGET_BOX_DIAGONAL_PX,
 )
+
+ROBOFLOW_API_URL = "https://serverless.roboflow.com"
+ROBOFLOW_WORKSPACE_NAME = "long-truong"
+ROBOFLOW_WORKFLOW_ID = "detect-frisbees"
+ROBOFLOW_IMAGE_KEY = "image"
+ROBOFLOW_USE_CACHE = True
+ROBOFLOW_API_KEY_ENV = "ROBOFLOW_API_KEY"
+HAS_BOX_ENV = "HAS_BOX"
 
 Point = tuple[float, float]
 Polygon = tuple[Point, Point, Point, Point]
@@ -39,36 +49,56 @@ class TransformGeometry:
     affine: tuple[float, float, float, float, float, float]
 
 
+@dataclass(frozen=True)
+class TransformVariant:
+    suffix: str
+    angle: float
+
+
 def draw_frisbee_box(
     image_path: str,
     detections: dict | list,
     output_path: str | None = None,
     has_box: bool = DEFAULT_HAS_BOX,
-) -> str:
+) -> list[str]:
     image_file = Path(image_path)
     if not image_file.exists():
         raise FileNotFoundError(f"Image file does not exist: {image_file}")
 
     selected_box = _extract_selected_box(detections)
     if selected_box is None:
-        raise ValueError("No usable frisbee predictions found in detection JSON.")
+        raise ValueError("No usable frisbee predictions found in detection result.")
 
-    output_file = Path(output_path) if output_path else _default_output_path(image_file)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    variants = _build_transform_variants(selected_box)
+    base_output_file = Path(output_path) if output_path else _default_output_path(image_file)
+    output_files = _variant_output_paths(base_output_file, variants)
+    for output_file in output_files:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
     Image, ImageDraw = _load_pillow()
     with Image.open(image_file) as image:
-        transformed, transformed_box = _transform_image(Image, image, selected_box)
-        if has_box:
-            draw = ImageDraw.Draw(transformed)
-            draw.line(
-                (*transformed_box, transformed_box[0]),
-                fill=BOX_OUTLINE_COLOR,
-                width=BOX_OUTLINE_WIDTH,
+        render_jobs = [
+            (
+                output_file,
+                *_transform_image(Image, image, selected_box, variant),
             )
-        transformed.save(output_file)
+            for output_file, variant in zip(
+                output_files,
+                variants,
+            )
+        ]
 
-    return str(output_file)
+        for output_file, transformed, transformed_box in render_jobs:
+            if has_box:
+                draw = ImageDraw.Draw(transformed)
+                draw.line(
+                    (*transformed_box, transformed_box[0]),
+                    fill=BOX_OUTLINE_COLOR,
+                    width=BOX_OUTLINE_WIDTH,
+                )
+            transformed.save(output_file)
+
+    return [str(output_file) for output_file in output_files]
 
 
 def _load_pillow() -> tuple[Any, Any]:
@@ -82,14 +112,66 @@ def _load_pillow() -> tuple[Any, Any]:
     return Image, ImageDraw
 
 
-def draw_frisbee_box_from_file(
+def draw_frisbee_box_from_api(
     image_path: str,
-    json_path: str,
     output_path: str | None = None,
-    has_box: bool = DEFAULT_HAS_BOX,
-) -> str:
-    detections = _load_detection_json_file(json_path)
+) -> list[str]:
+    image_file = Path(image_path)
+    if not image_file.exists():
+        raise FileNotFoundError(f"Image file does not exist: {image_file}")
+
+    _load_env()
+    api_key = _load_required_env(ROBOFLOW_API_KEY_ENV)
+    has_box = _load_has_box()
+    detections = _run_detection_workflow(image_path, api_key)
     return draw_frisbee_box(image_path, detections, output_path, has_box)
+
+
+def _load_env() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError as exc:
+        raise RuntimeError(
+            "python-dotenv is required. Install dependencies with: pip3 install -r requirements.txt"
+        ) from exc
+
+    load_dotenv(Path(__file__).with_name(".env"))
+
+
+def _load_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise ValueError(f"Missing required environment variable: {name}")
+
+    return value.strip()
+
+
+def _load_has_box() -> bool:
+    return _parse_bool(_load_required_env(HAS_BOX_ENV))
+
+
+def _run_detection_workflow(image_path: str, api_key: str) -> dict | list:
+    try:
+        from inference_sdk import InferenceHTTPClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "inference-sdk is required. Install dependencies with: pip3 install -r requirements.txt"
+        ) from exc
+
+    client = InferenceHTTPClient(
+        api_url=ROBOFLOW_API_URL,
+        api_key=api_key,
+    )
+    result = client.run_workflow(
+        workspace_name=ROBOFLOW_WORKSPACE_NAME,
+        workflow_id=ROBOFLOW_WORKFLOW_ID,
+        images={ROBOFLOW_IMAGE_KEY: image_path},
+        use_cache=ROBOFLOW_USE_CACHE,
+    )
+    if not isinstance(result, (dict, list)):
+        raise ValueError("Roboflow workflow result must be an object or array.")
+
+    return result
 
 
 def _extract_selected_box(detections: dict | list) -> DetectionBox | None:
@@ -155,8 +237,13 @@ def _looks_like_prediction(value: dict) -> bool:
     return all(key in value for key in ("x", "y", "width", "height"))
 
 
-def _transform_image(Image: Any, image: Any, box: DetectionBox) -> tuple[Any, Polygon]:
-    geometry = _build_transform_geometry(box)
+def _transform_image(
+    Image: Any,
+    image: Any,
+    box: DetectionBox,
+    variant: TransformVariant,
+) -> tuple[Any, Polygon]:
+    geometry = _build_transform_geometry(box, variant.angle)
     _validate_crop_bounds(geometry, image.size)
 
     transform_enum = getattr(Image, "Transform", None)
@@ -173,13 +260,23 @@ def _transform_image(Image: Any, image: Any, box: DetectionBox) -> tuple[Any, Po
     return transformed, _transform_polygon(_box_corners(box), geometry)
 
 
-def _build_transform_geometry(box: DetectionBox) -> TransformGeometry:
+def _build_transform_variants(box: DetectionBox) -> tuple[TransformVariant, TransformVariant]:
+    if box.width <= 0 or box.height <= 0:
+        raise ValueError("Detection box width and height must be positive.")
+
+    angle = math.atan(box.height / box.width)
+    return (
+        TransformVariant(BD_OUTPUT_SUFFIX, angle),
+        TransformVariant(AC_OUTPUT_SUFFIX, -angle),
+    )
+
+
+def _build_transform_geometry(box: DetectionBox, angle: float) -> TransformGeometry:
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
 
     diagonal = math.hypot(box.width, box.height)
     scale = TARGET_BOX_DIAGONAL_PX / diagonal
-    angle = math.atan(box.height / box.width)
     source_center = (box.x, box.y)
     output_center = (CROP_WIDTH_PX / 2, CROP_HEIGHT_PX / 2)
     cos_angle = math.cos(angle)
@@ -271,34 +368,18 @@ def _default_output_path(image_file: Path) -> Path:
     return image_file.parent / "output" / f"{image_file.stem}-boxed{image_file.suffix}"
 
 
-def _load_detection_json_file(json_file: str) -> dict | list:
-    json_path = Path(json_file)
-    if not json_path.exists():
-        raise FileNotFoundError(f"Detection JSON file does not exist: {json_path}")
-
-    return _parse_detection_json(json_path.read_text(encoding="utf-8"))
-
-
-def _load_detection_json(json_file: str | None, json_value: str | None) -> dict | list:
-    if bool(json_file) == bool(json_value):
-        raise ValueError("Provide exactly one of --json-file or --json.")
-
-    if json_file:
-        return _load_detection_json_file(json_file)
-
-    return _parse_detection_json(json_value or "")
+def _variant_output_paths(
+    base_output_file: Path,
+    variants: tuple[TransformVariant, TransformVariant],
+) -> tuple[Path, Path]:
+    return (
+        _add_output_suffix(base_output_file, variants[0].suffix),
+        _add_output_suffix(base_output_file, variants[1].suffix),
+    )
 
 
-def _parse_detection_json(raw_json: str) -> dict | list:
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Detection JSON is invalid: {exc.msg}") from exc
-
-    if not isinstance(parsed, (dict, list)):
-        raise ValueError("Detection JSON must be an object or array.")
-
-    return parsed
+def _add_output_suffix(output_file: Path, suffix: str) -> Path:
+    return output_file.with_name(f"{output_file.stem}-{suffix}{output_file.suffix}")
 
 
 def _parse_bool(value: str) -> bool:
@@ -313,24 +394,10 @@ def _parse_bool(value: str) -> bool:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Transform an image around a frisbee detection box."
+        description="Detect a frisbee via Roboflow and transform the image around its box."
     )
     parser.add_argument("image_path", help="Relative or absolute path to the source image.")
-    parser.add_argument(
-        "json_path",
-        nargs="?",
-        help="Path to the detection JSON file, for example data/input-1.json.",
-    )
-    parser.add_argument("--json-file", help="Path to the detection JSON file.")
-    parser.add_argument("--json", help="Detection JSON as an inline string.")
     parser.add_argument("--output", help="Optional output image path.")
-    parser.add_argument(
-        "--has-box",
-        type=_parse_bool,
-        default=DEFAULT_HAS_BOX,
-        metavar="true|false",
-        help="Whether to draw the transformed frisbee box. Defaults to true.",
-    )
     return parser
 
 
@@ -339,22 +406,17 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        json_file = args.json_file or args.json_path
-        if args.json_file and args.json_path:
-            raise ValueError("Use either the positional JSON path or --json-file, not both.")
-
-        detections = _load_detection_json(json_file, args.json)
-        output_file = draw_frisbee_box(
+        output_files = draw_frisbee_box_from_api(
             args.image_path,
-            detections,
             args.output,
-            args.has_box,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Saved transformed image to: {output_file}")
+    print("Saved transformed images to:")
+    for output_file in output_files:
+        print(f"- {output_file}")
     return 0
 
 

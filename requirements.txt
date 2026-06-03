@@ -1,1 +1,3 @@
 Pillow
+inference-sdk
+python-dotenv

@@ -1,8 +1,8 @@
 # Frisbee Detection Transform MVP
 
-Minimal Python 3.11 project for transforming an image around a frisbee disc from an existing detection JSON result.
+Minimal Python 3.11 project for detecting a frisbee with a hosted Roboflow workflow, then transforming the image around the detected disc.
 
-This project does not run object detection itself. It takes a source image and a detection JSON object, then creates a normalized `1125x2000` output image centered on the selected frisbee box. By default, it draws the transformed box on the output image.
+The script takes a source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized `1125x2000` output images centered on the selected frisbee box. By default, it draws the transformed box on each output image.
 
 ## Input
 
@@ -12,30 +12,7 @@ This project does not run object detection itself. It takes a source image and a
    data/image-1.jpg
    ```
 
-2. Detection JSON in Roboflow-style format:
-
-   ```json
-   [
-     {
-       "predictions": {
-         "image": {
-           "width": 4608,
-           "height": 3072
-         },
-         "predictions": [
-           {
-             "width": 326,
-             "height": 136,
-             "x": 2229,
-             "y": 1707,
-             "confidence": 0.9032697081565857,
-             "class": "frisbee"
-           }
-         ]
-       }
-     }
-   ]
-   ```
+2. A local `.env` file with the Roboflow API key and box outline setting.
 
 The script treats `x` and `y` as the center of the box:
 
@@ -68,13 +45,14 @@ C = bottom-right
 D = bottom-left
 ```
 
-The image is scaled so the selected box diagonal length becomes `350px`. It is rotated counterclockwise by:
+The image is scaled so the selected box diagonal length becomes `350px`. It writes two variants:
 
 ```text
-angle = atan(height / width)
+BD variant: rotate by  atan(height / width)
+AC variant: rotate by -atan(height / width)
 ```
 
-This aligns diagonal `BD` with the horizontal line. The intersection of the box diagonals is placed at the exact center of the output image.
+This aligns diagonal `BD` with the horizontal line in one output image, and diagonal `AC` with the horizontal line in the other. The intersection of the box diagonals is placed at the exact center of each output image.
 
 If the required transformed crop exceeds the source image bounds, the script returns an error instead of padding the output.
 
@@ -86,16 +64,18 @@ Transformed images are saved to:
 data/output/
 ```
 
-By default, the output file is:
+By default, the output files are:
 
 ```bash
-data/output/<image-stem>-boxed.<ext>
+data/output/<image-stem>-boxed-bd.<ext>
+data/output/<image-stem>-boxed-ac.<ext>
 ```
 
 For example:
 
 ```bash
-data/output/image-1-boxed.jpg
+data/output/image-1-boxed-bd.jpg
+data/output/image-1-boxed-ac.jpg
 ```
 
 ## Setup
@@ -113,36 +93,34 @@ Install dependencies with `pip3`:
 pip3 install -r requirements.txt
 ```
 
-## Run
-
-Run with a JSON file:
+Create a local `.env` file:
 
 ```bash
-python3.11 draw_frisbee_box.py data/image-1.jpg data/input-1.json
+ROBOFLOW_API_KEY=your_api_key_here
+HAS_BOX=true
+```
+
+`HAS_BOX` accepts values such as `true`, `false`, `1`, `0`, `yes`, and `no`.
+
+## Run
+
+Run the hosted detection workflow and transform the image:
+
+```bash
+python3.11 draw_frisbee_box.py data/image-1.jpg
 ```
 
 Run with an explicit output path:
 
 ```bash
-python3.11 draw_frisbee_box.py data/image-1.jpg data/input-1.json --output data/output/image-1-boxed.jpg
+python3.11 draw_frisbee_box.py data/image-1.jpg --output data/output/image-1-boxed.jpg
 ```
 
-Run without drawing the final transformed box:
+This writes:
 
 ```bash
-python3.11 draw_frisbee_box.py data/image-1.jpg data/input-1.json --has-box false
-```
-
-The older named JSON argument also works:
-
-```bash
-python3.11 draw_frisbee_box.py data/image-1.jpg --json-file data/input-1.json
-```
-
-Run with inline JSON:
-
-```bash
-python3.11 draw_frisbee_box.py data/image-1.jpg --json '[{"predictions":{"predictions":[{"x":2229,"y":1707,"width":326,"height":136,"class":"frisbee"}]}}]'
+data/output/image-1-boxed-bd.jpg
+data/output/image-1-boxed-ac.jpg
 ```
 
 ## Notes
@@ -150,4 +128,4 @@ python3.11 draw_frisbee_box.py data/image-1.jpg --json '[{"predictions":{"predic
 - The script draws a thin red outline only. It does not fill the box.
 - The script transforms around the highest-confidence prediction with `"class": "frisbee"`.
 - If a prediction has no `class` field, it is usable when it includes `x`, `y`, `width`, and `height`.
-- The script does not infer or detect the box from image content.
+- Detection runs through the Roboflow hosted workflow before the transform starts.
