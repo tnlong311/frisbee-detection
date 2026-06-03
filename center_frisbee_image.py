@@ -42,7 +42,7 @@ class DetectionBox:
 
 
 @dataclass(frozen=True)
-class TransformGeometry:
+class CenteringGeometry:
     angle: float
     scale: float
     center: Point
@@ -51,12 +51,12 @@ class TransformGeometry:
 
 
 @dataclass(frozen=True)
-class TransformVariant:
+class CenteringVariant:
     suffix: str
     angle: float
 
 
-def draw_frisbee_box(
+def center_frisbee_image(
     image_path: str,
     detections: dict | list,
     output_path: str | None = None,
@@ -70,8 +70,10 @@ def draw_frisbee_box(
     if selected_box is None:
         raise ValueError("No usable frisbee predictions found in detection result.")
 
-    variants = _build_transform_variants(selected_box)
-    base_output_file = Path(output_path) if output_path else _default_output_path(image_file)
+    variants = _build_centering_variants(selected_box)
+    base_output_file = (
+        Path(output_path) if output_path else _default_centered_output_path(image_file)
+    )
     output_files = _variant_output_paths(base_output_file, variants)
     for output_file in output_files:
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +83,7 @@ def draw_frisbee_box(
         render_jobs = [
             (
                 output_file,
-                *_transform_image(Image, image, selected_box, variant),
+                *_render_centered_variant(Image, image, selected_box, variant),
             )
             for output_file, variant in zip(
                 output_files,
@@ -89,31 +91,20 @@ def draw_frisbee_box(
             )
         ]
 
-        for output_file, transformed, transformed_box in render_jobs:
+        for output_file, centered_image, centered_box in render_jobs:
             if has_box:
-                draw = ImageDraw.Draw(transformed)
+                draw = ImageDraw.Draw(centered_image)
                 draw.line(
-                    (*transformed_box, transformed_box[0]),
+                    (*centered_box, centered_box[0]),
                     fill=BOX_OUTLINE_COLOR,
                     width=BOX_OUTLINE_WIDTH,
                 )
-            transformed.save(output_file)
+            centered_image.save(output_file)
 
     return [str(output_file) for output_file in output_files]
 
 
-def _load_pillow() -> tuple[Any, Any]:
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError as exc:
-        raise RuntimeError(
-            "Pillow is required. Install dependencies with: pip3 install -r requirements.txt"
-        ) from exc
-
-    return Image, ImageDraw
-
-
-def draw_frisbee_box_from_api(
+def center_frisbee_image_from_api(
     image_path: str,
     output_path: str | None = None,
 ) -> list[str]:
@@ -125,7 +116,7 @@ def draw_frisbee_box_from_api(
     api_key = _load_required_env(ROBOFLOW_API_KEY_ENV)
     has_box = _load_has_box()
     detections = _run_detection_workflow(image_path, api_key)
-    return draw_frisbee_box(image_path, detections, output_path, has_box)
+    return center_frisbee_image(image_path, detections, output_path, has_box)
 
 
 def _load_env() -> None:
@@ -238,13 +229,13 @@ def _looks_like_prediction(value: dict) -> bool:
     return all(key in value for key in ("x", "y", "width", "height"))
 
 
-def _transform_image(
+def _render_centered_variant(
     Image: Any,
     image: Any,
     box: DetectionBox,
-    variant: TransformVariant,
+    variant: CenteringVariant,
 ) -> tuple[Any, Polygon]:
-    geometry = _build_transform_geometry(box, variant.angle)
+    geometry = _build_centering_geometry(box, variant.angle)
     _validate_crop_bounds(geometry, image.size)
 
     transform_enum = getattr(Image, "Transform", None)
@@ -252,27 +243,27 @@ def _transform_image(
     resampling_enum = getattr(Image, "Resampling", None)
     resample = resampling_enum.BICUBIC if resampling_enum else Image.BICUBIC
 
-    transformed = image.transform(
+    centered_image = image.transform(
         geometry.crop_size,
         affine_method,
         geometry.affine,
         resample=resample,
     )
-    return transformed, _transform_polygon(_box_corners(box), geometry)
+    return centered_image, _map_polygon_to_output(_box_corners(box), geometry)
 
 
-def _build_transform_variants(box: DetectionBox) -> tuple[TransformVariant, TransformVariant]:
+def _build_centering_variants(box: DetectionBox) -> tuple[CenteringVariant, CenteringVariant]:
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
 
     angle = math.atan(box.height / box.width)
     return (
-        TransformVariant(BD_OUTPUT_SUFFIX, angle),
-        TransformVariant(AC_OUTPUT_SUFFIX, -angle),
+        CenteringVariant(BD_OUTPUT_SUFFIX, angle),
+        CenteringVariant(AC_OUTPUT_SUFFIX, -angle),
     )
 
 
-def _build_transform_geometry(box: DetectionBox, angle: float) -> TransformGeometry:
+def _build_centering_geometry(box: DetectionBox, angle: float) -> CenteringGeometry:
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
 
@@ -298,11 +289,11 @@ def _build_transform_geometry(box: DetectionBox, angle: float) -> TransformGeome
         -sin_angle * output_center[0] + cos_angle * output_center[1]
     ) / scale
 
-    return TransformGeometry(angle, scale, source_center, crop_size, (a, b, c, d, e, f))
+    return CenteringGeometry(angle, scale, source_center, crop_size, (a, b, c, d, e, f))
 
 
 def _validate_crop_bounds(
-    geometry: TransformGeometry,
+    geometry: CenteringGeometry,
     image_size: tuple[int, int],
 ) -> None:
     image_width, image_height = image_size
@@ -324,13 +315,13 @@ def _validate_crop_bounds(
             or source_y > image_height
         ):
             raise ValueError(
-                "Transformed crop exceeds image bounds at source point "
+                "Centered crop exceeds image bounds at source point "
                 f"({source_x:.2f}, {source_y:.2f}) for image size "
                 f"{image_width}x{image_height}."
             )
 
 
-def _map_output_to_source(point: Point, geometry: TransformGeometry) -> Point:
+def _map_output_to_source(point: Point, geometry: CenteringGeometry) -> Point:
     a, b, c, d, e, f = geometry.affine
     x, y = point
     return a * x + b * y + c, d * x + e * y + f
@@ -344,17 +335,17 @@ def _box_corners(box: DetectionBox) -> Polygon:
     return (left, top), (right, top), (right, bottom), (left, bottom)
 
 
-def _transform_polygon(polygon: Polygon, geometry: TransformGeometry) -> Polygon:
+def _map_polygon_to_output(polygon: Polygon, geometry: CenteringGeometry) -> Polygon:
     cos_angle = math.cos(geometry.angle)
     sin_angle = math.sin(geometry.angle)
     crop_width, crop_height = geometry.crop_size
     output_center = (crop_width / 2, crop_height / 2)
 
-    transformed_points: list[Point] = []
+    output_points: list[Point] = []
     for x, y in polygon:
         dx = x - geometry.center[0]
         dy = y - geometry.center[1]
-        transformed_points.append(
+        output_points.append(
             (
                 output_center[0]
                 + geometry.scale * (cos_angle * dx - sin_angle * dy),
@@ -364,20 +355,20 @@ def _transform_polygon(polygon: Polygon, geometry: TransformGeometry) -> Polygon
         )
 
     return (
-        transformed_points[0],
-        transformed_points[1],
-        transformed_points[2],
-        transformed_points[3],
+        output_points[0],
+        output_points[1],
+        output_points[2],
+        output_points[3],
     )
 
 
-def _default_output_path(image_file: Path) -> Path:
+def _default_centered_output_path(image_file: Path) -> Path:
     return image_file.parent / "output" / f"{image_file.stem}-boxed{image_file.suffix}"
 
 
 def _variant_output_paths(
     base_output_file: Path,
-    variants: tuple[TransformVariant, TransformVariant],
+    variants: tuple[CenteringVariant, CenteringVariant],
 ) -> tuple[Path, Path]:
     return (
         _add_output_suffix(base_output_file, variants[0].suffix),
@@ -387,6 +378,17 @@ def _variant_output_paths(
 
 def _add_output_suffix(output_file: Path, suffix: str) -> Path:
     return output_file.with_name(f"{output_file.stem}-{suffix}{output_file.suffix}")
+
+
+def _load_pillow() -> tuple[Any, Any]:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise RuntimeError(
+            "Pillow is required. Install dependencies with: pip3 install -r requirements.txt"
+        ) from exc
+
+    return Image, ImageDraw
 
 
 def _parse_bool(value: str) -> bool:
@@ -401,7 +403,7 @@ def _parse_bool(value: str) -> bool:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Detect a frisbee via Roboflow and transform the image around its box."
+        description="Detect a frisbee via Roboflow and center the image around its box."
     )
     parser.add_argument("image_path", help="Relative or absolute path to the source image.")
     parser.add_argument("--output", help="Optional output image path.")
@@ -413,7 +415,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        output_files = draw_frisbee_box_from_api(
+        output_files = center_frisbee_image_from_api(
             args.image_path,
             args.output,
         )
@@ -421,7 +423,7 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print("Saved transformed images to:")
+    print("Saved centered images to:")
     for output_file in output_files:
         print(f"- {output_file}")
     return 0
