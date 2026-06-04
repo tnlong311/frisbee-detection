@@ -40,10 +40,6 @@ def images_to_video(
     if not image_files:
         raise ValueError(f"No supported images found in {source_dir}.")
 
-    logger.info("Found %s supported image(s).", len(image_files))
-    logger.info("Images per second: %s", _format_ips(ips))
-    logger.info("Estimated video duration: %.2f second(s).", len(image_files) / ips)
-
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Output video path: %s", output_file)
