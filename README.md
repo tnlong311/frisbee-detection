@@ -91,7 +91,7 @@ frisbee images-to-video data/video-input --ips 30
 Create a video with an explicit output path:
 
 ```bash
-frisbee images-to-video data/my-frames --ips 5 --output data/output/frisbee.mp4
+frisbee images-to-video data/finalize --ips 10 --output data/output-video/frisbee.mp4
 ```
 
 `--ips` means images per second. For example, `5` means five images in one second, and `0.5` means one image every two seconds.
