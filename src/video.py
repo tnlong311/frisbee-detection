@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from constants import SUPPORTED_IMAGE_SUFFIXES
-
-DEFAULT_OUTPUT_PATH = Path("data/output/video.mp4")
+from src.config import DEFAULT_VIDEO_OUTPUT_PATH
+from src.image_io import find_image_files, load_pillow
+from src.paths import resolve_existing_input_path
 
 TARGET_WIDTH_PX = 1440
 TARGET_HEIGHT_PX = 2560
@@ -29,14 +27,15 @@ logger = logging.getLogger(__name__)
 def images_to_video(
     input_dir: str | Path,
     ips: float,
-    output_path: str | Path = DEFAULT_OUTPUT_PATH,
+    output_path: str | Path = DEFAULT_VIDEO_OUTPUT_PATH,
 ) -> Path:
     _validate_ips(ips)
 
-    source_dir = _resolve_input_dir(input_dir)
+    source_dir = resolve_existing_input_path(input_dir)
+    _validate_input_dir(source_dir)
     logger.info("Input directory: %s", source_dir)
 
-    image_files = _find_image_files(source_dir)
+    image_files = find_image_files(source_dir)
     if not image_files:
         raise ValueError(f"No supported images found in {source_dir}.")
 
@@ -45,7 +44,7 @@ def images_to_video(
     logger.info("Output video path: %s", output_file)
 
     logger.info("Loading Pillow.")
-    Image = _load_pillow()
+    Image, _ImageDraw = load_pillow()
     logger.info("Locating FFmpeg.")
     ffmpeg_path = _load_ffmpeg()
     logger.info("Using FFmpeg: %s", ffmpeg_path)
@@ -62,44 +61,11 @@ def _validate_ips(ips: float) -> None:
         raise ValueError("IPS must be greater than 0.")
 
 
-def _resolve_input_dir(input_dir: str | Path) -> Path:
-    path = Path(input_dir)
-    if path.exists():
-        return path
-
-    if path.is_absolute():
-        repo_relative_path = Path.cwd() / str(path).lstrip("/")
-        if repo_relative_path.exists():
-            return repo_relative_path
-
-    return path
-
-
-def _find_image_files(input_dir: Path) -> list[Path]:
+def _validate_input_dir(input_dir: Path) -> None:
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Input path is not a directory: {input_dir}")
-
-    return sorted(
-        (
-            path
-            for path in input_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
-        ),
-        key=lambda path: (path.name.lower(), path.name),
-    )
-
-
-def _load_pillow() -> Any:
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise RuntimeError(
-            "Pillow is required. Install dependencies with: pip3 install -r requirements.txt"
-        ) from exc
-
-    return Image
 
 
 def _load_ffmpeg() -> str:
@@ -242,64 +208,3 @@ def _format_ffmpeg_error(stderr: str) -> str:
         return "FFmpeg failed without error output."
 
     return f"FFmpeg failed: {stderr}"
-
-
-def _parse_ips(value: str) -> float:
-    try:
-        ips = float(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("IPS must be a number.") from exc
-
-    if ips <= 0:
-        raise argparse.ArgumentTypeError("IPS must be greater than 0.")
-
-    return ips
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Create a 1440x2560 vertical H.264 MP4 video from images in a folder."
-    )
-    parser.add_argument(
-        "input_dir",
-        help=(
-            "Relative or absolute path to an image folder. A leading slash can be "
-            "used for repo-relative input, for example /data/video-input."
-        ),
-    )
-    parser.add_argument(
-        "--ips",
-        required=True,
-        type=_parse_ips,
-        help="Images per second. Example: 5 means 5 images in 1 second; 0.5 means 1 image in 2 seconds.",
-    )
-    parser.add_argument(
-        "--output",
-        default=str(DEFAULT_OUTPUT_PATH),
-        help=f"Output video path. Defaults to {DEFAULT_OUTPUT_PATH}.",
-    )
-    return parser
-
-
-def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    parser = _build_parser()
-    args = parser.parse_args()
-
-    try:
-        output_file = images_to_video(args.input_dir, args.ips, args.output)
-    except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"Saved video to: {output_file}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
