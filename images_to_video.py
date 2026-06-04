@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from constants import SUPPORTED_IMAGE_SUFFIXES
 
-INPUT_DIR = Path("data/video-input")
 DEFAULT_OUTPUT_PATH = Path("data/output/video.mp4")
 
 TARGET_WIDTH_PX = 1440
@@ -21,24 +23,39 @@ FFMPEG_PRESET = "medium"
 FFMPEG_CRF = "20"
 FFMPEG_PIXEL_FORMAT = "yuv420p"
 
+logger = logging.getLogger(__name__)
+
 
 def images_to_video(
+    input_dir: str | Path,
     ips: float,
     output_path: str | Path = DEFAULT_OUTPUT_PATH,
-    input_dir: str | Path = INPUT_DIR,
 ) -> Path:
     _validate_ips(ips)
 
-    image_files = _find_image_files(Path(input_dir))
+    source_dir = _resolve_input_dir(input_dir)
+    logger.info("Input directory: %s", source_dir)
+
+    image_files = _find_image_files(source_dir)
     if not image_files:
-        raise ValueError(f"No supported images found in {input_dir}.")
+        raise ValueError(f"No supported images found in {source_dir}.")
+
+    logger.info("Found %s supported image(s).", len(image_files))
+    logger.info("Images per second: %s", _format_ips(ips))
+    logger.info("Estimated video duration: %.2f second(s).", len(image_files) / ips)
 
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Output video path: %s", output_file)
 
+    logger.info("Loading Pillow.")
     Image = _load_pillow()
+    logger.info("Locating FFmpeg.")
     ffmpeg_path = _load_ffmpeg()
+    logger.info("Using FFmpeg: %s", ffmpeg_path)
+
     command = _build_ffmpeg_command(ffmpeg_path, ips, output_file)
+    logger.info("FFmpeg command: %s", _format_command(command))
     _write_video_frames(command, image_files, Image)
 
     return output_file
@@ -47,6 +64,19 @@ def images_to_video(
 def _validate_ips(ips: float) -> None:
     if ips <= 0:
         raise ValueError("IPS must be greater than 0.")
+
+
+def _resolve_input_dir(input_dir: str | Path) -> Path:
+    path = Path(input_dir)
+    if path.exists():
+        return path
+
+    if path.is_absolute():
+        repo_relative_path = Path.cwd() / str(path).lstrip("/")
+        if repo_relative_path.exists():
+            return repo_relative_path
+
+    return path
 
 
 def _find_image_files(input_dir: Path) -> list[Path]:
@@ -116,14 +146,21 @@ def _build_ffmpeg_command(ffmpeg_path: str, ips: float, output_file: Path) -> li
     ]
 
 
-def _format_ips(ips: float) -> str:
-    if ips.is_integer():
-        return str(int(ips))
+def _format_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
 
-    return f"{ips:g}"
+
+def _format_ips(ips: float) -> str:
+    normalized_ips = float(ips)
+    if normalized_ips.is_integer():
+        return str(int(normalized_ips))
+
+    return f"{normalized_ips:g}"
 
 
 def _write_video_frames(command: list[str], image_files: list[Path], Image: Any) -> None:
+    logger.info("Starting FFmpeg process.")
+    start_time = time.monotonic()
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -135,9 +172,12 @@ def _write_video_frames(command: list[str], image_files: list[Path], Image: Any)
         raise RuntimeError("Could not open FFmpeg stdin.")
 
     try:
-        for image_file in image_files:
+        total_images = len(image_files)
+        for index, image_file in enumerate(image_files, start=1):
+            logger.info("Writing frame %s/%s: %s", index, total_images, image_file)
             process.stdin.write(_build_video_frame(image_file, Image))
         process.stdin.close()
+        logger.info("All frames written. Waiting for FFmpeg to finish encoding.")
     except BrokenPipeError as exc:
         stderr = _read_stderr(process)
         process.wait()
@@ -155,6 +195,9 @@ def _write_video_frames(command: list[str], image_files: list[Path], Image: Any)
     return_code = process.wait()
     if return_code != 0:
         raise RuntimeError(_format_ffmpeg_error(stderr))
+
+    elapsed_seconds = time.monotonic() - start_time
+    logger.info("FFmpeg completed successfully in %.2f second(s).", elapsed_seconds)
 
 
 def _build_video_frame(image_file: Path, Image: Any) -> bytes:
@@ -219,7 +262,14 @@ def _parse_ips(value: str) -> float:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create a 1440x2560 vertical H.264 MP4 video from images in data/video-input."
+        description="Create a 1440x2560 vertical H.264 MP4 video from images in a folder."
+    )
+    parser.add_argument(
+        "input_dir",
+        help=(
+            "Relative or absolute path to an image folder. A leading slash can be "
+            "used for repo-relative input, for example /data/video-input."
+        ),
     )
     parser.add_argument(
         "--ips",
@@ -236,11 +286,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     parser = _build_parser()
     args = parser.parse_args()
 
     try:
-        output_file = images_to_video(args.ips, args.output)
+        output_file = images_to_video(args.input_dir, args.ips, args.output)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

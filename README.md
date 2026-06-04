@@ -7,7 +7,7 @@ Minimal Python 3.11 project for detecting a frisbee with a hosted Roboflow workf
 ```text
 center_frisbee_image.py  Detect a frisbee, center the source image, and save image variants.
 center_frisbee_images.py Detect frisbees in every image in a folder and save image variants.
-images_to_video.py   Turn images in data/video-input into a 1440x2560 vertical H.264 MP4 video.
+images_to_video.py   Turn images in a folder into a 1440x2560 vertical H.264 MP4 video.
 ```
 
 `center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write one boxed original image to `data/output-with-box`.
@@ -178,7 +178,7 @@ python3.11 center_frisbee_images.py data/images --output data/output
 
 ## Run Images To Video
 
-Place source frames in:
+Use a source frames folder, for example:
 
 ```bash
 data/video-input/
@@ -193,13 +193,13 @@ Supported image formats:
 Create the default video at `data/output/video.mp4`:
 
 ```bash
-python3.11 images_to_video.py --ips 30
+python3.11 images_to_video.py data/video-input --ips 30
 ```
 
 Create a video with an explicit output path:
 
 ```bash
-python3.11 images_to_video.py --ips 5 --output data/output/frisbee.mp4
+python3.11 images_to_video.py data/my-frames --ips 5 --output data/output/frisbee.mp4
 ```
 
 Images are sorted by filename, resized with object-fill behavior, and center-cropped to `1440x2560` for vertical video.
@@ -229,4 +229,4 @@ This format is the default because it balances playback compatibility, encoding 
 - The script centers around the highest-confidence prediction with `"class": "frisbee"`.
 - If a prediction has no `class` field, it is usable when it includes `x`, `y`, `width`, and `height`.
 - Detection runs through the Roboflow hosted workflow before centering starts.
-- `images_to_video.py` returns an error if `data/video-input` has no supported images.
+- `images_to_video.py` returns an error if the input folder has no supported images.
