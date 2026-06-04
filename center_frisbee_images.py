@@ -27,19 +27,25 @@ def center_frisbee_images_from_api(
     if not image_files:
         raise ValueError(f"No supported images found in {source_dir}.")
 
-    api_key, gen_box = load_api_settings()
+    api_key, gen_box, disc_line = load_api_settings()
     output_files: list[str] = []
     for image_file in image_files:
-        image_output_path = _build_batch_output_path(image_file, output_dir)
-        detections = run_detection_workflow(str(image_file), api_key)
-        output_files.extend(
-            center_frisbee_image(
+        print(f"Processing: {image_file}")
+        try:
+            image_output_path = _build_batch_output_path(image_file, output_dir)
+            centered_files = center_frisbee_image(
                 str(image_file),
-                detections,
+                run_detection_workflow(str(image_file), api_key),
                 str(image_output_path) if image_output_path else None,
                 gen_box,
+                disc_line,
             )
-        )
+            output_files.extend(centered_files)
+        except Exception as exc:
+            print(f"Failed: {image_file} ({exc})")
+            continue
+
+        print(f"Success: {image_file}")
 
     return output_files
 

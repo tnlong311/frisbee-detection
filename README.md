@@ -10,7 +10,7 @@ center_frisbee_images.py Detect frisbees in every image in a folder and save ima
 images_to_video.py   Turn images in data/video-input into a 1440x2560 vertical H.264 MP4 video.
 ```
 
-`center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write boxed copies to `data/output-with-box`.
+`center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write one boxed original image to `data/output-with-box`.
 
 ## Input
 
@@ -21,7 +21,7 @@ images_to_video.py   Turn images in data/video-input into a 1440x2560 vertical H
    data/images
    ```
 
-2. A local `.env` file with the Roboflow API key and boxed-copy setting.
+2. A local `.env` file with the Roboflow API key, boxed-copy setting, and optional disc-line setting.
 
 The script treats `x` and `y` as the center of the box:
 
@@ -36,12 +36,12 @@ When multiple frisbee predictions exist, the highest-confidence prediction contr
 
 ## Centering
 
-The output image is generated relative to the selected box diagonal:
+The output image size is generated relative to the selected disc line:
 
 ```text
 output aspect ratio = 9:16
-target box diagonal = selected box diagonal
-output width = target box diagonal * 3
+target disc line = selected disc line length
+output width = target disc line * 4
 output height = output width * 16 / 9
 ```
 
@@ -54,14 +54,23 @@ C = bottom-right
 D = bottom-left
 ```
 
-The image is scaled so the selected box diagonal stays at the target disc length. It writes two variants:
+The selected disc line controls the crop size and rotation. By default, when `DISC_LINE` is unset or blank, it writes two diagonal variants:
 
 ```text
 BD variant: rotate by  atan(height / width)
 AC variant: rotate by -atan(height / width)
 ```
 
-This aligns diagonal `BD` with the horizontal line in one output image, and diagonal `AC` with the horizontal line in the other. The intersection of the box diagonals is placed at the exact center of each output image.
+This aligns diagonal `BD` with the horizontal line in one output image, and diagonal `AC` with the horizontal line in the other. To generate one image for a known disc line, set `DISC_LINE` to one of:
+
+```text
+AB or CD: rotate by 0
+BC or AD: rotate by -pi / 2
+AC:       rotate by -atan(height / width)
+BD:       rotate by  atan(height / width)
+```
+
+`DISC_LINE` is case-insensitive and accepts `AB`, `BC`, `CD`, `AD`, `AC`, or `BD`. The selected line is aligned with the horizontal line in the output image. The intersection of the box diagonals is placed at the exact center of each output image.
 
 If the required centered crop exceeds the source image bounds, the script returns an error instead of padding the output.
 
@@ -80,11 +89,16 @@ data/output/<image-stem>-boxed-bd.<ext>
 data/output/<image-stem>-boxed-ac.<ext>
 ```
 
-When `GEN_BOX=true`, boxed copies are also saved to:
+When `DISC_LINE` is set, only that line's output file is written:
 
 ```bash
-data/output-with-box/<image-stem>-boxed-bd.<ext>
-data/output-with-box/<image-stem>-boxed-ac.<ext>
+data/output/<image-stem>-boxed-<disc-line>.<ext>
+```
+
+When `GEN_BOX=true`, one original source image with the detected box is also saved to:
+
+```bash
+data/output-with-box/<image-stem>-boxed.<ext>
 ```
 
 For example:
@@ -116,9 +130,12 @@ Create a local `.env` file:
 ```bash
 ROBOFLOW_API_KEY=your_api_key_here
 GEN_BOX=false
+DISC_LINE=
 ```
 
 `GEN_BOX` accepts values such as `true`, `false`, `1`, `0`, `yes`, and `no`.
+
+`DISC_LINE` is optional. Leave it blank to generate the default `bd` and `ac` variants, or set it to `AB`, `BC`, `CD`, `AD`, `AC`, or `BD` to generate only that variant.
 
 ## Run Detection Centering
 

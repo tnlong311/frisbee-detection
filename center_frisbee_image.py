@@ -5,6 +5,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from constants import (
     BOX_OUTLINE_WIDTH,
     CROP_ASPECT_HEIGHT,
     CROP_ASPECT_WIDTH,
-    CROP_WIDTH_TO_TARGET_BOX_DIAGONAL,
+    CROP_WIDTH_TO_TARGET_DISC_LINE,
     DEFAULT_GEN_BOX,
 )
 
@@ -26,6 +27,11 @@ ROBOFLOW_IMAGE_KEY = "image"
 ROBOFLOW_USE_CACHE = True
 ROBOFLOW_API_KEY_ENV = "ROBOFLOW_API_KEY"
 GEN_BOX_ENV = "GEN_BOX"
+DISC_LINE_ENV = "DISC_LINE"
+DEFAULT_OUTPUT_DIR = Path("data/output")
+BOX_OUTPUT_DIR = Path("data/output-with-box")
+DEFAULT_DISC_LINES = ("BD", "AC")
+VALID_DISC_LINES = ("AB", "BC", "CD", "AD", "AC", "BD")
 
 Point = tuple[float, float]
 Polygon = tuple[Point, Point, Point, Point]
@@ -54,6 +60,7 @@ class CenteringGeometry:
 class CenteringVariant:
     suffix: str
     angle: float
+    line_length: float
 
 
 def center_frisbee_image(
@@ -61,21 +68,29 @@ def center_frisbee_image(
     detections: dict | list,
     output_path: str | None = None,
     gen_box: bool = DEFAULT_GEN_BOX,
+    disc_line: str | None = None,
 ) -> list[str]:
     image_file = Path(image_path)
     if not image_file.exists():
         raise FileNotFoundError(f"Image file does not exist: {image_file}")
 
+    normalized_disc_line = _normalize_disc_line(disc_line)
     selected_box = _extract_selected_box(detections)
     if selected_box is None:
         raise ValueError("No usable frisbee predictions found in detection result.")
 
-    variants = _build_centering_variants(selected_box)
-    base_output_file = (
-        Path(output_path) if output_path else _default_centered_output_path(image_file)
+    variants = _build_centering_variants(selected_box, normalized_disc_line)
+    output_timestamp = _current_output_timestamp()
+    base_output_file = _add_output_timestamp(
+        Path(output_path) if output_path else _default_centered_output_path(image_file),
+        output_timestamp,
     )
     output_files = _variant_output_paths(base_output_file, variants)
-    boxed_output_files = _with_box_output_paths(output_files) if gen_box else ()
+    boxed_output_files = (
+        (_source_with_box_output_path(image_file),)
+        if gen_box
+        else ()
+    )
     for output_file in (*output_files, *boxed_output_files):
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -92,17 +107,19 @@ def center_frisbee_image(
             )
         ]
 
-        for output_file, centered_image, centered_box in render_jobs:
+        for output_file, centered_image, _centered_box in render_jobs:
             centered_image.save(output_file)
-            if gen_box:
-                boxed_image = centered_image.copy()
-                draw = ImageDraw.Draw(boxed_image)
-                draw.line(
-                    (*centered_box, centered_box[0]),
-                    fill=BOX_OUTLINE_COLOR,
-                    width=BOX_OUTLINE_WIDTH,
-                )
-                boxed_image.save(_with_box_output_path(output_file))
+
+        if gen_box:
+            boxed_image = image.copy()
+            source_box = _box_corners(selected_box)
+            draw = ImageDraw.Draw(boxed_image)
+            draw.line(
+                (*source_box, source_box[0]),
+                fill=BOX_OUTLINE_COLOR,
+                width=BOX_OUTLINE_WIDTH,
+            )
+            boxed_image.save(boxed_output_files[0])
 
     return [str(output_file) for output_file in (*output_files, *boxed_output_files)]
 
@@ -117,14 +134,24 @@ def center_frisbee_image_from_api(
     if not image_file.is_file():
         raise FileNotFoundError(f"Input path is not an image file: {image_file}")
 
-    api_key, gen_box = load_api_settings()
+    api_key, gen_box, disc_line = load_api_settings()
     detections = run_detection_workflow(str(image_file), api_key)
-    return center_frisbee_image(str(image_file), detections, output_path, gen_box)
+    return center_frisbee_image(
+        str(image_file),
+        detections,
+        output_path,
+        gen_box,
+        disc_line,
+    )
 
 
-def load_api_settings() -> tuple[str, bool]:
+def load_api_settings() -> tuple[str, bool, str | None]:
     _load_env()
-    return _load_required_env(ROBOFLOW_API_KEY_ENV), _load_gen_box()
+    return (
+        _load_required_env(ROBOFLOW_API_KEY_ENV),
+        _load_gen_box(),
+        _load_disc_line(),
+    )
 
 
 def resolve_existing_input_path(input_path: str | Path) -> Path:
@@ -161,6 +188,10 @@ def _load_required_env(name: str) -> str:
 
 def _load_gen_box() -> bool:
     return _parse_bool(_load_required_env(GEN_BOX_ENV))
+
+
+def _load_disc_line() -> str | None:
+    return _normalize_disc_line(os.getenv(DISC_LINE_ENV))
 
 
 def run_detection_workflow(image_path: str, api_key: str) -> dict | list:
@@ -256,7 +287,7 @@ def _render_centered_variant(
     box: DetectionBox,
     variant: CenteringVariant,
 ) -> tuple[Any, Polygon]:
-    geometry = _build_centering_geometry(box, variant.angle)
+    geometry = _build_centering_geometry(box, variant.angle, variant.line_length)
     _validate_crop_bounds(geometry, image.size)
 
     transform_enum = getattr(Image, "Transform", None)
@@ -273,27 +304,80 @@ def _render_centered_variant(
     return centered_image, _map_polygon_to_output(_box_corners(box), geometry)
 
 
-def _build_centering_variants(box: DetectionBox) -> tuple[CenteringVariant, CenteringVariant]:
+def _normalize_disc_line(disc_line: str | None) -> str | None:
+    if disc_line is None or not disc_line.strip():
+        return None
+
+    normalized_disc_line = disc_line.strip().upper()
+    if normalized_disc_line in VALID_DISC_LINES:
+        return normalized_disc_line
+
+    valid_values = ", ".join(VALID_DISC_LINES)
+    raise ValueError(
+        f"Invalid {DISC_LINE_ENV} value: {disc_line!r}. Expected one of: {valid_values}."
+    )
+
+
+def _build_centering_variants(
+    box: DetectionBox,
+    disc_line: str | None,
+) -> tuple[CenteringVariant, ...]:
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
 
     angle = math.atan(box.height / box.width)
-    return (
-        CenteringVariant(BD_OUTPUT_SUFFIX, angle),
-        CenteringVariant(AC_OUTPUT_SUFFIX, -angle),
+    diagonal = math.hypot(box.width, box.height)
+    angles_by_disc_line = {
+        "AB": 0.0,
+        "BC": -math.pi / 2,
+        "CD": 0.0,
+        "AD": -math.pi / 2,
+        "AC": -angle,
+        "BD": angle,
+    }
+    lengths_by_disc_line = {
+        "AB": box.width,
+        "BC": box.height,
+        "CD": box.width,
+        "AD": box.height,
+        "AC": diagonal,
+        "BD": diagonal,
+    }
+    selected_disc_lines = (disc_line,) if disc_line else DEFAULT_DISC_LINES
+
+    return tuple(
+        CenteringVariant(
+            _disc_line_output_suffix(selected_disc_line),
+            angles_by_disc_line[selected_disc_line],
+            lengths_by_disc_line[selected_disc_line],
+        )
+        for selected_disc_line in selected_disc_lines
     )
 
 
-def _build_centering_geometry(box: DetectionBox, angle: float) -> CenteringGeometry:
+def _disc_line_output_suffix(disc_line: str) -> str:
+    if disc_line == "AC":
+        return AC_OUTPUT_SUFFIX
+    if disc_line == "BD":
+        return BD_OUTPUT_SUFFIX
+
+    return disc_line.lower()
+
+
+def _build_centering_geometry(
+    box: DetectionBox,
+    angle: float,
+    disc_line_length: float,
+) -> CenteringGeometry:
     if box.width <= 0 or box.height <= 0:
         raise ValueError("Detection box width and height must be positive.")
+    if disc_line_length <= 0:
+        raise ValueError("Detection disc line length must be positive.")
 
-    detected_box_diagonal = math.hypot(box.width, box.height)
-    target_box_diagonal = detected_box_diagonal
-    crop_width = round(target_box_diagonal * CROP_WIDTH_TO_TARGET_BOX_DIAGONAL)
+    crop_width = round(disc_line_length * CROP_WIDTH_TO_TARGET_DISC_LINE)
     crop_height = round(crop_width * CROP_ASPECT_HEIGHT / CROP_ASPECT_WIDTH)
     crop_size = (crop_width, crop_height)
-    scale = target_box_diagonal / detected_box_diagonal
+    scale = 1.0
     source_center = (box.x, box.y)
     output_center = (crop_width / 2, crop_height / 2)
     cos_angle = math.cos(angle)
@@ -384,37 +468,32 @@ def _map_polygon_to_output(polygon: Polygon, geometry: CenteringGeometry) -> Pol
 
 
 def _default_centered_output_path(image_file: Path) -> Path:
-    return image_file.parent / "output" / f"{image_file.stem}-boxed{image_file.suffix}"
+    return DEFAULT_OUTPUT_DIR / f"{image_file.stem}-boxed{image_file.suffix}"
 
 
 def _variant_output_paths(
     base_output_file: Path,
-    variants: tuple[CenteringVariant, CenteringVariant],
-) -> tuple[Path, Path]:
-    return (
-        _add_output_suffix(base_output_file, variants[0].suffix),
-        _add_output_suffix(base_output_file, variants[1].suffix),
+    variants: tuple[CenteringVariant, ...],
+) -> tuple[Path, ...]:
+    return tuple(
+        _add_output_suffix(base_output_file, variant.suffix) for variant in variants
     )
 
 
-def _with_box_output_paths(output_files: tuple[Path, Path]) -> tuple[Path, Path]:
-    return (
-        _with_box_output_path(output_files[0]),
-        _with_box_output_path(output_files[1]),
-    )
-
-
-def _with_box_output_path(output_file: Path) -> Path:
-    output_dir = output_file.parent
-    if output_dir == Path("."):
-        return Path("output-with-box") / output_file.name
-
-    with_box_dir = output_dir.with_name(f"{output_dir.name}-with-box")
-    return with_box_dir / output_file.name
+def _source_with_box_output_path(image_file: Path) -> Path:
+    return BOX_OUTPUT_DIR / f"{image_file.stem}-boxed{image_file.suffix}"
 
 
 def _add_output_suffix(output_file: Path, suffix: str) -> Path:
     return output_file.with_name(f"{output_file.stem}-{suffix}{output_file.suffix}")
+
+
+def _add_output_timestamp(output_file: Path, timestamp: str) -> Path:
+    return output_file.with_name(f"{output_file.stem}-{timestamp}{output_file.suffix}")
+
+
+def _current_output_timestamp() -> str:
+    return str(int(time.time()))
 
 
 def _load_pillow() -> tuple[Any, Any]:
