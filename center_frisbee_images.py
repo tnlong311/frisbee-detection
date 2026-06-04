@@ -7,6 +7,7 @@ from pathlib import Path
 from center_frisbee_image import (
     center_frisbee_image,
     load_api_settings,
+    prepared_image_file,
     resolve_existing_input_path,
     run_detection_workflow,
 )
@@ -27,20 +28,21 @@ def center_frisbee_images_from_api(
     if not image_files:
         raise ValueError(f"No supported images found in {source_dir}.")
 
-    api_key, gen_box, disc_line, save_source = load_api_settings()
+    api_key, gen_box, disc_line, save_source, auto_resize = load_api_settings()
     output_files: list[str] = []
     for image_file in image_files:
         print(f"Processing: {image_file}")
         try:
             image_output_path = _build_batch_output_path(image_file, output_dir)
-            centered_files = center_frisbee_image(
-                str(image_file),
-                run_detection_workflow(str(image_file), api_key),
-                str(image_output_path) if image_output_path else None,
-                gen_box,
-                disc_line,
-                save_source,
-            )
+            with prepared_image_file(image_file, auto_resize) as processing_file:
+                centered_files = center_frisbee_image(
+                    str(processing_file),
+                    run_detection_workflow(str(processing_file), api_key),
+                    str(image_output_path) if image_output_path else None,
+                    gen_box,
+                    disc_line,
+                    save_source,
+                )
             if not centered_files:
                 continue
 

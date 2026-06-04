@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import math
 import os
 import shutil
 import sys
 from dataclasses import dataclass
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +32,12 @@ ROBOFLOW_USE_CACHE = True
 ROBOFLOW_API_KEY_ENV = "ROBOFLOW_API_KEY"
 GEN_BOX_ENV = "GEN_BOX"
 SAVE_SOURCE_ENV = "SAVE_SOURCE"
+AUTO_RESIZE_ENV = "AUTO_RESIZE"
 DISC_LINE_ENV = "DISC_LINE"
 DEFAULT_OUTPUT_DIR = Path("data/output")
 BOX_OUTPUT_DIR = Path("data/output-with-box")
 SAVED_INPUT_DIR = Path("data/saved-input")
+MAX_AUTO_RESIZE_BYTES = 10 * 1024 * 1024
 DEFAULT_DISC_LINES = ("BD", "AC")
 VALID_DISC_LINES = ("AB", "BC", "CD", "AD", "AC", "BD")
 
@@ -152,25 +157,27 @@ def center_frisbee_image_from_api(
     if not image_file.is_file():
         raise FileNotFoundError(f"Input path is not an image file: {image_file}")
 
-    api_key, gen_box, disc_line, save_source = load_api_settings()
-    detections = run_detection_workflow(str(image_file), api_key)
-    return center_frisbee_image(
-        str(image_file),
-        detections,
-        output_path,
-        gen_box,
-        disc_line,
-        save_source,
-    )
+    api_key, gen_box, disc_line, save_source, auto_resize = load_api_settings()
+    with prepared_image_file(image_file, auto_resize) as processing_file:
+        detections = run_detection_workflow(str(processing_file), api_key)
+        return center_frisbee_image(
+            str(processing_file),
+            detections,
+            output_path,
+            gen_box,
+            disc_line,
+            save_source,
+        )
 
 
-def load_api_settings() -> tuple[str, bool, str | None, bool]:
+def load_api_settings() -> tuple[str, bool, str | None, bool, bool]:
     _load_env()
     return (
         _load_required_env(ROBOFLOW_API_KEY_ENV),
         _load_gen_box(),
         _load_disc_line(),
         _load_save_source(),
+        _load_auto_resize(),
     )
 
 
@@ -220,6 +227,169 @@ def _load_save_source() -> bool:
         return False
 
     return _parse_bool(value)
+
+
+def _load_auto_resize() -> bool:
+    value = os.getenv(AUTO_RESIZE_ENV)
+    if value is None or not value.strip():
+        return False
+
+    return _parse_bool(value)
+
+
+@contextmanager
+def prepared_image_file(image_file: Path, auto_resize: bool) -> Iterator[Path]:
+    if not auto_resize or image_file.stat().st_size <= MAX_AUTO_RESIZE_BYTES:
+        yield image_file
+        return
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        resized_file = Path(temp_dir) / image_file.name
+        original_size = image_file.stat().st_size
+        resized_size = _resize_image_under_size(
+            image_file,
+            resized_file,
+            MAX_AUTO_RESIZE_BYTES,
+        )
+        print(
+            "Auto-resized: "
+            f"{image_file} ({_format_file_size(original_size)}) -> "
+            f"{_format_file_size(resized_size)}"
+        )
+        yield resized_file
+
+
+def _resize_image_under_size(
+    image_file: Path,
+    output_file: Path,
+    max_bytes: int,
+) -> int:
+    Image, _ImageDraw = _load_pillow()
+    resampling_enum = getattr(Image, "Resampling", None)
+    resample = resampling_enum.LANCZOS if resampling_enum else Image.LANCZOS
+    with Image.open(image_file) as image:
+        image.load()
+        save_format = _image_save_format(image, image_file)
+        low_scale = 0.01
+        high_scale = 1.0
+        best_size: int | None = None
+        best_dimensions: tuple[int, int] | None = None
+
+        for _attempt in range(18):
+            scale = (low_scale + high_scale) / 2
+            dimensions = _scaled_image_dimensions(image.size, scale)
+            candidate_size = _save_resized_candidate(
+                image,
+                output_file,
+                dimensions,
+                save_format,
+                resample,
+            )
+
+            if candidate_size < max_bytes:
+                best_size = candidate_size
+                best_dimensions = dimensions
+                low_scale = scale
+            else:
+                high_scale = scale
+
+        if best_dimensions is None:
+            best_dimensions = _scaled_image_dimensions(image.size, low_scale)
+            best_size = _save_resized_candidate(
+                image,
+                output_file,
+                best_dimensions,
+                save_format,
+                resample,
+            )
+
+        if best_size >= max_bytes:
+            raise ValueError(
+                "Auto-resized image is still at or above "
+                f"{_format_file_size(max_bytes)}."
+            )
+
+        final_size = _save_resized_candidate(
+            image,
+            output_file,
+            best_dimensions,
+            save_format,
+            resample,
+        )
+        if final_size >= max_bytes:
+            raise ValueError(
+                "Auto-resized image is still at or above "
+                f"{_format_file_size(max_bytes)}."
+            )
+
+        return final_size
+
+
+def _save_resized_candidate(
+    image: Any,
+    output_file: Path,
+    dimensions: tuple[int, int],
+    save_format: str,
+    resample: Any,
+) -> int:
+    resized_image = image.resize(dimensions, resample=resample)
+    if save_format == "JPEG" and resized_image.mode not in {"RGB", "L"}:
+        resized_image = resized_image.convert("RGB")
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    resized_image.save(
+        output_file,
+        format=save_format,
+        **_image_save_options(save_format),
+    )
+    return output_file.stat().st_size
+
+
+def _scaled_image_dimensions(
+    image_size: tuple[int, int],
+    scale: float,
+) -> tuple[int, int]:
+    width, height = image_size
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _image_save_format(image: Any, image_file: Path) -> str:
+    image_format = image.format or _image_format_from_suffix(image_file.suffix)
+    normalized_format = image_format.upper()
+    if normalized_format == "JPG":
+        return "JPEG"
+    if normalized_format == "TIF":
+        return "TIFF"
+
+    return normalized_format
+
+
+def _image_format_from_suffix(suffix: str) -> str:
+    formats_by_suffix = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".webp": "WEBP",
+        ".bmp": "BMP",
+        ".tif": "TIFF",
+        ".tiff": "TIFF",
+    }
+    return formats_by_suffix.get(suffix.lower(), suffix.lstrip("."))
+
+
+def _image_save_options(save_format: str) -> dict[str, Any]:
+    if save_format == "JPEG":
+        return {"optimize": True, "progressive": True, "quality": 95}
+    if save_format == "WEBP":
+        return {"method": 6, "quality": 95}
+    if save_format == "PNG":
+        return {"optimize": True}
+
+    return {}
+
+
+def _format_file_size(size: int) -> str:
+    return f"{size / (1024 * 1024):.2f} MB"
 
 
 def run_detection_workflow(image_path: str, api_key: str) -> dict | list:
