@@ -27,7 +27,7 @@ def center_frisbee_images_from_api(
     if not image_files:
         raise ValueError(f"No supported images found in {source_dir}.")
 
-    api_key, gen_box, disc_line = load_api_settings()
+    api_key, gen_box, disc_line, save_source = load_api_settings()
     output_files: list[str] = []
     for image_file in image_files:
         print(f"Processing: {image_file}")
@@ -39,7 +39,11 @@ def center_frisbee_images_from_api(
                 str(image_output_path) if image_output_path else None,
                 gen_box,
                 disc_line,
+                save_source,
             )
+            if not centered_files:
+                continue
+
             output_files.extend(centered_files)
         except Exception as exc:
             print(f"Failed: {image_file} ({exc})")
@@ -107,6 +111,10 @@ def main() -> int:
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if not output_files:
+        print("No centered images saved.")
+        return 0
 
     print("Saved centered images to:")
     for output_file in output_files:

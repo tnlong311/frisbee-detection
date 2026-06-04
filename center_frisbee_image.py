@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 import time
@@ -27,9 +28,11 @@ ROBOFLOW_IMAGE_KEY = "image"
 ROBOFLOW_USE_CACHE = True
 ROBOFLOW_API_KEY_ENV = "ROBOFLOW_API_KEY"
 GEN_BOX_ENV = "GEN_BOX"
+SAVE_SOURCE_ENV = "SAVE_SOURCE"
 DISC_LINE_ENV = "DISC_LINE"
 DEFAULT_OUTPUT_DIR = Path("data/output")
 BOX_OUTPUT_DIR = Path("data/output-with-box")
+SAVED_INPUT_DIR = Path("data/saved-input")
 DEFAULT_DISC_LINES = ("BD", "AC")
 VALID_DISC_LINES = ("AB", "BC", "CD", "AD", "AC", "BD")
 
@@ -69,6 +72,7 @@ def center_frisbee_image(
     output_path: str | None = None,
     gen_box: bool = DEFAULT_GEN_BOX,
     disc_line: str | None = None,
+    save_source: bool = False,
 ) -> list[str]:
     image_file = Path(image_path)
     if not image_file.exists():
@@ -77,7 +81,8 @@ def center_frisbee_image(
     normalized_disc_line = _normalize_disc_line(disc_line)
     selected_box = _extract_selected_box(detections)
     if selected_box is None:
-        raise ValueError("No usable frisbee predictions found in detection result.")
+        print(f"Skipped: {image_file} (no frisbee detected)")
+        return []
 
     variants = _build_centering_variants(selected_box, normalized_disc_line)
     output_timestamp = _current_output_timestamp()
@@ -91,8 +96,11 @@ def center_frisbee_image(
         if gen_box
         else ()
     )
-    for output_file in (*output_files, *boxed_output_files):
-        output_file.parent.mkdir(parents=True, exist_ok=True)
+    saved_source_files = (
+        (_saved_source_output_path(image_file),)
+        if save_source
+        else ()
+    )
 
     Image, ImageDraw = _load_pillow()
     with Image.open(image_file) as image:
@@ -106,6 +114,9 @@ def center_frisbee_image(
                 variants,
             )
         ]
+
+        for output_file in (*output_files, *boxed_output_files):
+            output_file.parent.mkdir(parents=True, exist_ok=True)
 
         for output_file, centered_image, _centered_box in render_jobs:
             centered_image.save(output_file)
@@ -121,7 +132,14 @@ def center_frisbee_image(
             )
             boxed_image.save(boxed_output_files[0])
 
-    return [str(output_file) for output_file in (*output_files, *boxed_output_files)]
+    if save_source:
+        saved_source_files[0].parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(image_file, saved_source_files[0])
+
+    return [
+        str(output_file)
+        for output_file in (*output_files, *boxed_output_files, *saved_source_files)
+    ]
 
 
 def center_frisbee_image_from_api(
@@ -134,7 +152,7 @@ def center_frisbee_image_from_api(
     if not image_file.is_file():
         raise FileNotFoundError(f"Input path is not an image file: {image_file}")
 
-    api_key, gen_box, disc_line = load_api_settings()
+    api_key, gen_box, disc_line, save_source = load_api_settings()
     detections = run_detection_workflow(str(image_file), api_key)
     return center_frisbee_image(
         str(image_file),
@@ -142,15 +160,17 @@ def center_frisbee_image_from_api(
         output_path,
         gen_box,
         disc_line,
+        save_source,
     )
 
 
-def load_api_settings() -> tuple[str, bool, str | None]:
+def load_api_settings() -> tuple[str, bool, str | None, bool]:
     _load_env()
     return (
         _load_required_env(ROBOFLOW_API_KEY_ENV),
         _load_gen_box(),
         _load_disc_line(),
+        _load_save_source(),
     )
 
 
@@ -192,6 +212,14 @@ def _load_gen_box() -> bool:
 
 def _load_disc_line() -> str | None:
     return _normalize_disc_line(os.getenv(DISC_LINE_ENV))
+
+
+def _load_save_source() -> bool:
+    value = os.getenv(SAVE_SOURCE_ENV)
+    if value is None or not value.strip():
+        return False
+
+    return _parse_bool(value)
 
 
 def run_detection_workflow(image_path: str, api_key: str) -> dict | list:
@@ -484,6 +512,10 @@ def _source_with_box_output_path(image_file: Path) -> Path:
     return BOX_OUTPUT_DIR / f"{image_file.stem}-boxed{image_file.suffix}"
 
 
+def _saved_source_output_path(image_file: Path) -> Path:
+    return SAVED_INPUT_DIR / image_file.name
+
+
 def _add_output_suffix(output_file: Path, suffix: str) -> Path:
     return output_file.with_name(f"{output_file.stem}-{suffix}{output_file.suffix}")
 
@@ -544,6 +576,10 @@ def main() -> int:
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if not output_files:
+        print("No centered images saved.")
+        return 0
 
     print("Saved centered images to:")
     for output_file in output_files:

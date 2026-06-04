@@ -10,7 +10,7 @@ center_frisbee_images.py Detect frisbees in every image in a folder and save ima
 images_to_video.py   Turn images in a folder into a 1440x2560 vertical H.264 MP4 video.
 ```
 
-`center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write one boxed original image to `data/output-with-box`.
+`center_frisbee_image.py` takes one source image, calls the `long-truong/detect-frisbees` Roboflow Serverless Hosted API workflow, then creates normalized output images centered on the selected frisbee box. `center_frisbee_images.py` applies the same processing to every supported image in a folder. When `GEN_BOX=true`, centered scripts also write one boxed original image to `data/output-with-box`. When `SAVE_SOURCE=true`, successfully processed source images are copied to `data/saved-input`.
 
 ## Input
 
@@ -101,6 +101,12 @@ When `GEN_BOX=true`, one original source image with the detected box is also sav
 data/output-with-box/<image-stem>-boxed.<ext>
 ```
 
+When `SAVE_SOURCE=true`, each source image with a detected box and successful centered crop is copied to:
+
+```bash
+data/saved-input/<image-name>.<ext>
+```
+
 For example:
 
 ```bash
@@ -130,10 +136,13 @@ Create a local `.env` file:
 ```bash
 ROBOFLOW_API_KEY=your_api_key_here
 GEN_BOX=false
+SAVE_SOURCE=false
 DISC_LINE=
 ```
 
 `GEN_BOX` accepts values such as `true`, `false`, `1`, `0`, `yes`, and `no`.
+
+`SAVE_SOURCE` accepts the same boolean values as `GEN_BOX`. It defaults to `false` when unset or blank.
 
 `DISC_LINE` is optional. Leave it blank to generate the default `bd` and `ac` variants, or set it to `AB`, `BC`, `CD`, `AD`, `AC`, or `BD` to generate only that variant.
 
