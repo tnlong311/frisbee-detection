@@ -6,7 +6,7 @@ For implementation details, see [architecture.md](architecture.md).
 
 ## Demo
 
-[Watch the frisbee detection demo](demo/frisbee-detection-demo.mp4)
+![Frisbee detection demo](demo/frisbee-detection-demo.gif)
 
 ## Setup
 
