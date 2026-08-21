@@ -6,7 +6,10 @@ For implementation details, see [architecture.md](architecture.md).
 
 ## Demo
 
-[Watch the frisbee detection demo](demo/frisbee-detection-demo.mp4)
+<video controls width="360">
+  <source src="https://raw.githubusercontent.com/tnlong311/frisbee-detection/main/demo/frisbee-detection-demo.mp4" type="video/mp4">
+  Your browser does not support embedded video. [Watch the frisbee detection demo](demo/frisbee-detection-demo.mp4).
+</video>
 
 ## Setup
 
