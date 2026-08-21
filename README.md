@@ -4,6 +4,10 @@ Detect frisbees with a hosted Roboflow workflow, create centered image outputs, 
 
 For implementation details, see [architecture.md](architecture.md).
 
+## Demo
+
+[Watch the frisbee detection demo](demo/frisbee-detection-demo.mp4)
+
 ## Setup
 
 Create and activate a Python 3.11 virtual environment:
